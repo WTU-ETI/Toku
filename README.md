@@ -148,6 +148,8 @@ pip install -r requirements.txt
 # 进入 Toku 项目目录
 cd Toku
 
+# 运行代码框架生成器
+
 # 运行智能生成器
 python Routerchain.py
 
@@ -277,94 +279,6 @@ Toku 特别针对 Claude API 进行了优化：
 ## 📝 许可证
 
 本项目基于 MIT 许可证开源。详见 [LICENSE](LICENSE) 文件。
-
-## � Token 优化策略详解
-
-### Toku 的三层 Token 节省机制
-
-```python
-# 第一层：项目结构解析（一次性成本）
-def parse_project_structure():
-    """
-    消耗：~500 tokens
-    作用：理解项目需求，生成文件清单
-    优势：避免为每个文件单独分析需求
-    """
-    pass
-
-# 第二层：智能模板匹配（零 Token 成本）  
-def classify_file_types():
-    """
-    消耗：0 tokens (本地逻辑)
-    作用：为每个文件选择最优代码模板
-    优势：基于规则匹配，无需 AI 调用
-    """
-    pass
-
-# 第三层：批量代码生成（高效填充）
-def batch_generate_code():
-    """
-    消耗：~4000 tokens (所有文件)
-    作用：基于模板批量生成高质量代码
-    优势：模板复用 + 批量处理
-    """
-    pass
-```
-
-### 🔌 Claude API 特别优化
-
-Toku 针对 Claude API 的独特优势：
-
-```python
-# Claude 专用配置
-CLAUDE_CONFIG = {
-    "model": "claude-3-5-sonnet-20241022",
-    "max_tokens": 4000,
-    "temperature": 0.3,  # 代码生成推荐较低温度
-    "system_prompt": "你是专业的代码生成助手，专注于生成高质量、可维护的代码..."
-}
-
-# 针对 Claude 优化的提示词策略
-def get_claude_optimized_prompt(file_type, context):
-    """
-    Claude 更擅长理解复杂的上下文和结构化输出
-    通过精心设计的提示词最大化代码质量
-    """
-    return f"""
-    角色：{file_type} 专家
-    任务：生成 {context['file_path']} 文件
-    要求：遵循最佳实践，包含完整注释
-    输出：仅输出代码，无需解释
-    """
-```
-
-### 💡 成本控制技巧
-
-```python
-# 1. 智能批量处理
-def batch_process_files(files):
-    """将相似文件打包处理，降低 API 调用次数"""
-    similar_files = group_by_type(files)
-    for file_type, file_group in similar_files.items():
-        generate_batch(file_type, file_group)
-
-# 2. 模板复用率最大化
-template_cache = {
-    "fastapi_router": "标准路由模板",
-    "sqlalchemy_model": "标准模型模板", 
-    "pydantic_schema": "标准验证模板"
-}
-
-# 3. Token 预算管理
-class TokenBudget:
-    def __init__(self, limit=10000):
-        self.limit = limit
-        self.used = 0
-    
-    def check_budget(self, estimated_tokens):
-        if self.used + estimated_tokens > self.limit:
-            raise BudgetExceededError("Token 预算已用尽")
-```
 
 ## �🙏 致谢
 
