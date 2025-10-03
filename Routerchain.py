@@ -21,7 +21,7 @@ class ProjectBuilder:
         
         # 创建LLM实例
         self.llm = ChatOpenAI(
-            model="Qwen/Qwen2.5-Coder-7B-Instruct",
+            model="Qwen/Qwen2.5-Coder-32B-Instruct",
             temperature=0.7,
             base_url="https://api.siliconflow.cn/v1",
             api_key=self.api_key,
@@ -61,44 +61,81 @@ class ProjectBuilder:
         }
 
     def parse_project_structure(self, md_file_path: str) -> Dict[str, Dict]:
-        """解析项目结构Markdown文件"""
+        """解析Markdown格式的项目结构文件"""
+        print("开始解析项目结构...")
+        
         with open(md_file_path, 'r', encoding='utf-8') as f:
             content = f.read()
         
-        print("开始解析项目结构...")
+        # 提取目录树部分 - 修改正则表达式以匹配实际格式
+        import re
         
-        # 提取目录结构 - 修复正则表达式
-        tree_match = re.search(r'```\n(.*?)\n```', content, re.DOTALL)
+        # 查找以项目名称/开始的目录树
+        tree_pattern = r'```?\s*\n?([\w_]+/\s*\n(?:.*\n)*?)(?=\n##|\n```|$)'
+        tree_match = re.search(tree_pattern, content, re.MULTILINE)
+        
         if not tree_match:
-            # 尝试另一种格式
-            tree_match = re.search(r'```[^\n]*\n(.*?)\n```', content, re.DOTALL)
+            # 尝试另一种模式：直接查找包含├──或└──的内容块
+            tree_pattern = r'([\w_]+/\s*\n(?:[│├└─\s]+.*\n)+)'
+            tree_match = re.search(tree_pattern, content, re.MULTILINE)
         
         if not tree_match:
-            raise ValueError("未找到项目目录结构")
+            print("未找到目录树结构，尝试直接解析...")
+            # 直接从内容中提取文件路径
+            file_descriptions = self._parse_file_descriptions(content)
+            
+            project_files = {}
+            for file_path, description in file_descriptions.items():
+                if self._should_generate_file(file_path):
+                    file_type = self._classify_file_type(file_path)
+                    functions = self._extract_functions(description, file_path)
+                    
+                    project_files[file_path] = {
+                        'type': file_type,
+                        'functions': functions,
+                        'description': description
+                    }
+            
+            if not project_files:
+                raise ValueError("未找到任何可生成的文件")
+            
+            print(f"成功解析 {len(project_files)} 个文件")
+            return project_files
         
-        tree_content = tree_match.group(1).strip()
-        print(f"提取到的目录结构:\n{tree_content}")
+        tree_content = tree_match.group(1)
+        print(f"找到目录树:\n{tree_content[:200]}...")
         
-        # 解析文件描述
-        file_descriptions = self._parse_file_descriptions(content)
-        print(f"解析到 {len(file_descriptions)} 个文件描述")
-        
-        # 提取所有文件路径
+        # 提取文件路径
         file_paths = self._extract_file_paths(tree_content)
         print(f"提取到 {len(file_paths)} 个文件路径")
         
-        # 组合文件信息
-        project_files = {}
-        for file_path in file_paths:
-            if self._should_generate_file(file_path):
-                file_type = self._classify_file_type(file_path)
-                project_files[file_path] = {
-                    'type': file_type,
-                    'description': file_descriptions.get(file_path, ''),
-                    'functions': self._extract_functions(content, file_path)
-                }
-                print(f"添加文件: {file_path} (类型: {file_type})")
+        # 解析函数描述
+        file_descriptions = self._parse_file_descriptions(content)
+        print(f"解析到 {len(file_descriptions)} 个文件描述")
         
+        # 构建项目文件字典
+        project_files = {}
+        
+        for file_path in file_paths:
+            if not self._should_generate_file(file_path):
+                continue
+            
+            # 获取文件描述
+            description = file_descriptions.get(file_path, "")
+            
+            # 分类文件类型
+            file_type = self._classify_file_type(file_path)
+            
+            # 提取函数列表
+            functions = self._extract_functions(description, file_path)
+            
+            project_files[file_path] = {
+                'type': file_type,
+                'functions': functions,
+                'description': description
+            }
+        
+        print(f"成功解析 {len(project_files)} 个文件")
         return project_files
 
     def _should_generate_file(self, file_path: str) -> bool:
@@ -122,22 +159,11 @@ class ProjectBuilder:
             
         return False
 
-    def _parse_file_descriptions(self, content: str) -> Dict[str, str]:
-        """解析文件描述"""
-        descriptions = {}
-        
-        # 匹配文件描述部分
-        pattern = r'### `([^`]+)`\s*\n(.*?)(?=###|$)'
-        matches = re.findall(pattern, content, re.DOTALL)
-        
-        for file_path, desc in matches:
-            descriptions[file_path] = desc.strip()
-        
-        return descriptions
-
     def _extract_file_paths(self, tree_content: str) -> List[str]:
-        """从目录树中提取文件路径 - 修复版本"""
-        files = []
+        """从目录树中提取文件路径"""
+        import re
+        
+        file_paths = []
         lines = tree_content.split('\n')
         path_stack = []
         
@@ -146,80 +172,54 @@ class ProjectBuilder:
                 continue
             
             # 移除树形字符
-            clean_line = re.sub(r'[├└│─\s]+', '', line)
-            if not clean_line:
-                continue
-                
-            # 计算缩进层级
-            indent = 0
-            for char in line:
-                if char in '│ ':
-                    indent += 1
-                else:
-                    break
+            clean_line = re.sub(r'[│├└─\s]+', '', line).strip()
             
-            # 估算层级
-            level = indent // 4 if indent > 0 else 0
-            
-            # 清理文件/目录名
-            name = clean_line.rstrip('/')
-            
-            # 调整路径栈
-            path_stack = path_stack[:level]
-            
-            if clean_line.endswith('/'):
-                # 目录
-                path_stack.append(name)
+            if not clean_line or clean_line.endswith('/'):
+                # 这是一个目录
+                if clean_line.endswith('/'):
+                    # 计算缩进级别
+                    indent = len(line) - len(line.lstrip())
+                    dir_name = clean_line
+                    
+                    # 更新路径栈
+                    while len(path_stack) > indent // 4:
+                        path_stack.pop()
+                    
+                    path_stack.append(dir_name.rstrip('/'))
             else:
-                # 文件
+                # 这是一个文件
+                indent = len(line) - len(line.lstrip())
+                
+                # 更新路径栈
+                while len(path_stack) > indent // 4:
+                    path_stack.pop()
+                
+                # 构建完整路径
                 if path_stack:
-                    file_path = '/'.join(path_stack + [name])
+                    full_path = '/'.join(path_stack) + '/' + clean_line
                 else:
-                    file_path = name
-                files.append(file_path)
+                    full_path = clean_line
+                
+                file_paths.append(full_path)
         
-        return files
+        return file_paths
 
-    def _classify_file_type(self, file_path: str) -> str:
-        """根据文件路径分类文件类型"""
-        file_path_lower = file_path.lower()
-        file_name = Path(file_path).name.lower()
+    def _parse_file_descriptions(self, content: str) -> Dict[str, str]:
+        """解析文件描述和函数列表"""
+        import re
         
-        # 特殊文件处理
-        if file_name == 'dockerfile':
-            return "docker"
-        if file_name == 'requirements.txt':
-            return "requirements"
-        if file_name == 'readme.md':
-            return "util"
+        file_descriptions = {}
         
-        # 按路径模式分类
-        for file_type, patterns in self.file_type_patterns.items():
-            if any(pattern in file_path_lower for pattern in patterns):
-                return file_type
+        # 匹配 ## 文件路径 格式的描述块
+        pattern = r'##\s+([\w/.]+)\s*\n((?:[-\s\w()#/]+\n?)+)'
+        matches = re.finditer(pattern, content, re.MULTILINE)
         
-        return "util"  # 默认类型
-
-    def _extract_functions(self, content: str, file_path: str) -> List[str]:
-        """提取文件中的函数/类信息"""
-        functions = []
+        for match in matches:
+            file_path = match.group(1).strip()
+            description = match.group(2).strip()
+            file_descriptions[file_path] = description
         
-        # 在文件描述中查找函数和类
-        pattern = rf'### `{re.escape(file_path)}`(.*?)(?=###|$)'
-        match = re.search(pattern, content, re.DOTALL)
-        
-        if match:
-            desc_content = match.group(1)
-            
-            # 提取函数
-            func_matches = re.findall(r'- \*\*Function\*\*: `([^`]+)`', desc_content)
-            functions.extend(func_matches)
-            
-            # 提取类
-            class_matches = re.findall(r'- \*\*Class\*\*: `([^`]+)`', desc_content)
-            functions.extend(class_matches)
-        
-        return functions
+        return file_descriptions
 
     def generate_file_content(self, file_path: str, file_info: Dict) -> str:
         """为单个文件生成内容"""
@@ -243,22 +243,42 @@ class ProjectBuilder:
             
             # 清理Markdown代码块标记
             result = self._clean_generated_content(result)
+            
+            # 添加调试信息
+            if "```" in result:
+                print(f"警告: {file_path} 仍包含Markdown标记")
+                print(f"内容前50个字符: {result[:50]}")
+            
             return result
         except Exception as e:
             print(f"生成 {file_path} 时出错: {e}")
             return self._get_fallback_content(file_path, file_type)
 
     def _clean_generated_content(self, content: str) -> str:
-        """清理生成内容中的Markdown标记"""
-        # 移除开头的```python标记
-        content = re.sub(r'^```python\s*\n', '', content)
-        content = re.sub(r'^```\s*\n', '', content)
+        """清理生成内容中的Markdown标记 - 改进版"""
+        if not content:
+            return content
+        
+        # 移除开头的各种代码块标记
+        content = re.sub(r'^```python\s*\n?', '', content, flags=re.MULTILINE)
+        content = re.sub(r'^```\s*\n?', '', content, flags=re.MULTILINE)
         
         # 移除结尾的```标记
-        content = re.sub(r'\n```\s*$', '', content)
+        content = re.sub(r'\n?```\s*$', '', content, flags=re.MULTILINE)
         
-        # 移除首尾空白行
-        content = content.strip()
+        # 移除中间出现的独立```行
+        lines = content.split('\n')
+        cleaned_lines = []
+        
+        for i, line in enumerate(lines):
+            stripped_line = line.strip()
+            # 跳过只包含```的行
+            if stripped_line == '```' or stripped_line == '```python':
+                continue
+            cleaned_lines.append(line)
+        
+        # 重新组合并移除首尾空白行
+        content = '\n'.join(cleaned_lines).strip()
         
         return content
 
@@ -338,6 +358,41 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
         except Exception as e:
             print(f"    保存失败: {e}")
 
+    def _classify_file_type(self, file_path: str) -> str:
+        """根据文件路径分类文件类型"""
+        file_path_lower = file_path.lower()
+        
+        # 检查每种文件类型的模式
+        for file_type, patterns in self.file_type_patterns.items():
+            for pattern in patterns:
+                if pattern in file_path_lower:
+                    return file_type
+        
+        # 默认返回util类型
+        return "util"
+
+    def _extract_functions(self, description: str, file_path: str) -> List[str]:
+        """从描述中提取函数列表"""
+        if not description:
+            return []
+        
+        functions = []
+        
+        # 匹配函数定义模式
+        # 格式1: - function_name()  # 注释
+        pattern1 = r'-\s+(\w+)\(\)'
+        matches1 = re.findall(pattern1, description)
+        functions.extend(matches1)
+        
+        # 格式2: ClassName  # 注释 (用于类定义)
+        if 'model' in file_path.lower() or 'schema' in file_path.lower():
+            pattern2 = r'-\s+(\w+)\s+#'
+            matches2 = re.findall(pattern2, description)
+            functions.extend(matches2)
+        
+        # 去重并返回
+        return list(set(functions))
+
     # 模板定义（在所有模板中添加清理指令）
     def _get_database_template(self) -> str:
         return """
@@ -355,8 +410,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 5. 添加错误处理
 6. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_docker_template(self) -> str:
@@ -374,7 +433,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 5. 暴露合适的端口
 6. 优化镜像大小
 
-重要：请直接输出Dockerfile内容，不要使用任何代码块标记！
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_requirements_template(self) -> str:
@@ -392,7 +456,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 5. 指定具体版本号
 6. 按功能分组注释
 
-重要：请直接输出requirements.txt内容，不要使用任何代码块标记！
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_router_template(self) -> str:
@@ -412,8 +481,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 包含完整的文档字符串
 7. 遵循RESTful API设计原则
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_model_template(self) -> str:
@@ -433,8 +506,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加__repr__方法
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_schema_template(self) -> str:
@@ -454,8 +531,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加示例数据
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_service_template(self) -> str:
@@ -475,8 +556,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 实现事务管理
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_config_template(self) -> str:
@@ -496,8 +581,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加配置文档
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_test_template(self) -> str:
@@ -517,8 +606,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加断言验证
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_migration_template(self) -> str:
@@ -538,8 +631,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加错误处理
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_util_template(self) -> str:
@@ -559,8 +656,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 6. 添加使用示例
 7. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
     def _get_main_template(self) -> str:
@@ -581,8 +682,12 @@ CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 7. 包含启动和关闭事件
 8. 包含完整的文档字符串
 
-重要：请直接输出Python代码，不要使用```python```标记，不要使用任何Markdown格式！
-只输出纯Python代码内容。
+!!! 重要约束 !!!
+- 绝对不要使用 ```python 或 ``` 标记
+- 直接输出纯Python代码
+- 不要添加任何Markdown格式
+- 第一行应该直接是Python代码（如import语句或注释）
+- 最后一行应该直接是Python代码
 """
 
 
