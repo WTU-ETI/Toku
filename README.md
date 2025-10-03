@@ -149,6 +149,7 @@ pip install -r requirements.txt
 cd Toku
 
 # 运行代码框架生成器
+python Router.py
 
 # 运行智能生成器
 python Routerchain.py
